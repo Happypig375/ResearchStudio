@@ -8,8 +8,8 @@
 #
 # Auto-detects OS + Python, installs each bundle's native and Python deps,
 # and installs the selected skills into <repo-root>/.claude/skills/ and/or
-# <repo-root>/.codex/skills/ (both git-ignored; copied on Windows). Idempotent
-# — safe to re-run.
+# <repo-root>/.codex/skills/ (both git-ignored; junctioned on Windows with a
+# copy fallback). Idempotent — safe to re-run.
 #
 # Usage:
 #   bash install.sh                              # interactive prompts
@@ -208,34 +208,62 @@ pip_install() {
   "$PY" -m pip install --user --upgrade "$@"
 }
 
+# remove_skill_destination <path> — safely remove a prior skill install.
+# cmd rmdir removes Windows junctions without traversing their target.
+remove_skill_destination() {
+  local dst="$1"
+  [ -e "$dst" ] || [ -L "$dst" ] || return 0
+
+  if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+    local dst_win
+    dst_win="$(cygpath -w "$dst")"
+    MSYS_NO_PATHCONV=1 cmd.exe /c rmdir "$dst_win" >/dev/null 2>&1 || rm -rf "$dst"
+  else
+    rm -rf "$dst"
+  fi
+}
+
+# install_skill <runtime> <src> <dst> <name> — install one skill for one runtime.
+install_skill() {
+  local runtime="$1" src="$2" dst="$3" name="$4"
+  remove_skill_destination "$dst"
+
+  if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+    local src_win dst_win
+    src_win="$(cygpath -w "$src")"
+    dst_win="$(cygpath -w "$dst")"
+    if MSYS_NO_PATHCONV=1 cmd.exe /c mklink /J "$dst_win" "$src_win" >/dev/null; then
+      printf '   • %-7s %s (junction) → %s\n' "$runtime" "$name" "$src"
+      return
+    fi
+
+    warn "could not create a Windows junction for $name — copying instead"
+  fi
+
+  if [ "$OS" = windows ]; then
+    printf '   • %-7s %s (copied) ← %s\n' "$runtime" "$name" "$src"
+  else
+    ln -s "$src" "$dst"
+    printf '   • %-7s %s → %s\n' "$runtime" "$name" "$src"
+    return
+  fi
+
+  cp -R "$src" "$dst"
+}
+
 # link_skill <abs_src_dir> <link_name>  — into every selected runtime's skills dir.
-# Windows uses copies because NTFS symlink creation may require elevation.
 link_skill() {
   local src="$1" name="$2"
   [ -d "$src" ] || { warn "missing $src — skipped"; return; }
   if [ "$USE_CLAUDE" = 1 ]; then
     mkdir -p "$CLAUDE_SKILLS_DIR"
     local dst="$CLAUDE_SKILLS_DIR/$name"
-    rm -rf "$dst"
-    if [ "$OS" = windows ]; then
-      cp -R "$src" "$dst"
-      printf '   • claude  %s (copied) ← %s\n' "$name" "$src"
-    else
-      ln -s "$src" "$dst"
-      printf '   • claude  %s → %s\n' "$name" "$src"
-    fi
+    install_skill claude "$src" "$dst" "$name"
   fi
   if [ "$USE_CODEX" = 1 ]; then
     mkdir -p "$CODEX_SKILLS_DIR"
     local dst="$CODEX_SKILLS_DIR/$name"
-    rm -rf "$dst"
-    if [ "$OS" = windows ]; then
-      cp -R "$src" "$dst"
-      printf '   • codex   %s (copied) ← %s\n' "$name" "$src"
-    else
-      ln -s "$src" "$dst"
-      printf '   • codex   %s → %s\n' "$name" "$src"
-    fi
+    install_skill codex "$src" "$dst" "$name"
   fi
 }
 
