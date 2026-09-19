@@ -7,8 +7,9 @@
 #   • which agent runtimes to link into — Claude Code, Codex, or both
 #
 # Auto-detects OS + Python, installs each bundle's native and Python deps,
-# and symlinks the selected skills into <repo-root>/.claude/skills/ and/or
-# <repo-root>/.codex/skills/ (both git-ignored). Idempotent — safe to re-run.
+# and installs the selected skills into <repo-root>/.claude/skills/ and/or
+# <repo-root>/.codex/skills/ (both git-ignored; copied on Windows). Idempotent
+# — safe to re-run.
 #
 # Usage:
 #   bash install.sh                              # interactive prompts
@@ -142,13 +143,13 @@ case "$(uname -s)" in
     elif command -v dnf     >/dev/null 2>&1; then PKG=dnf
     elif command -v pacman  >/dev/null 2>&1; then PKG=pacman
     else PKG=none; fi ;;
-  MINGW*|MSYS*|CYGWIN*|Windows*)
-    echo "Windows shell detected — install.sh is a bash script. Run it inside WSL (Ubuntu):"
-    echo "    wsl --install        # one-time, then reopen Ubuntu and re-run: bash install.sh"
-    exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*|Windows*) OS=windows; PKG=none ;;
   *) OS=unknown; PKG=none ;;
 esac
 echo "  os:           $OS  (package manager: $PKG)"
+if [ "$OS" = windows ]; then
+  export PYTHONUTF8="${PYTHONUTF8:-1}"
+fi
 
 # ---------------------------------------------------------------------------
 # 1) Python detection — Reel needs ≥3.10, Idea-only is happy with ≥3.9
@@ -208,20 +209,33 @@ pip_install() {
 }
 
 # link_skill <abs_src_dir> <link_name>  — into every selected runtime's skills dir.
+# Windows uses copies because NTFS symlink creation may require elevation.
 link_skill() {
   local src="$1" name="$2"
   [ -d "$src" ] || { warn "missing $src — skipped"; return; }
   if [ "$USE_CLAUDE" = 1 ]; then
     mkdir -p "$CLAUDE_SKILLS_DIR"
     local dst="$CLAUDE_SKILLS_DIR/$name"
-    rm -rf "$dst"; ln -s "$src" "$dst"
-    printf '   • claude  %s → %s\n' "$name" "$src"
+    rm -rf "$dst"
+    if [ "$OS" = windows ]; then
+      cp -R "$src" "$dst"
+      printf '   • claude  %s (copied) ← %s\n' "$name" "$src"
+    else
+      ln -s "$src" "$dst"
+      printf '   • claude  %s → %s\n' "$name" "$src"
+    fi
   fi
   if [ "$USE_CODEX" = 1 ]; then
     mkdir -p "$CODEX_SKILLS_DIR"
     local dst="$CODEX_SKILLS_DIR/$name"
-    rm -rf "$dst"; ln -s "$src" "$dst"
-    printf '   • codex   %s → %s\n' "$name" "$src"
+    rm -rf "$dst"
+    if [ "$OS" = windows ]; then
+      cp -R "$src" "$dst"
+      printf '   • codex   %s (copied) ← %s\n' "$name" "$src"
+    else
+      ln -s "$src" "$dst"
+      printf '   • codex   %s → %s\n' "$name" "$src"
+    fi
   fi
 }
 
@@ -372,7 +386,14 @@ if [ "$USE_REEL" = 1 ]; then
       ;;
     dnf)    sudo dnf install -y poppler-utils libreoffice ffmpeg || warn "native tools failed — Reel features degrade; install manually if needed" ;;
     pacman) sudo pacman -S --noconfirm poppler libreoffice-fresh ffmpeg || warn "native tools failed — Reel features degrade; install manually if needed" ;;
-    *)      warn "no known package manager — install these manually: ${REEL_APT[*]}" ;;
+    *)
+      warn "no known package manager — install these manually: ${REEL_APT[*]}"
+      if [ "$OS" = windows ]; then
+        warn "with winget: winget install --id oschwartz10612.Poppler --exact"
+        warn "           winget install --id TheDocumentFoundation.LibreOffice --exact"
+        warn "           winget install --id Gyan.FFmpeg --exact"
+      fi
+      ;;
   esac
 
   log "Python dependencies (PyMuPDF, Pillow, numpy, python-docx, qrcode, playwright, imageio-ffmpeg, edge-tts)"
